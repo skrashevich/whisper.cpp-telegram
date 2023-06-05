@@ -82,19 +82,12 @@ func main() {
 		os.Exit(0)
 	}()
 
-	if !isInSet(*model, modelNames) {
-		fmt.Printf("Model must be one of: %s\n", strings.Join(modelNames, ","))
-		os.Exit(1)
-	}
-
 	// Get output path
 	modelspath, err := modeldownloader.GetOut()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(-1)
 	}
-
-	log.Printf("Use model %s", *model)
 
 	// Create context which quits on SIGINT or SIGQUIT
 	ctx := modeldownloader.ContextForSignal(os.Interrupt, syscall.SIGQUIT)
@@ -104,23 +97,31 @@ func main() {
 
 	url, err := modeldownloader.URLForModel(*model)
 	modelfile := filepath.Join(modelspath, filepath.Base(url))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
-	} else if modelfile, err := modeldownloader.Download(ctx, progress, url, modelspath); err == nil || err == io.EOF {
-		fmt.Fprintln(progress, "Model downloaded")
-	} else if err == context.Canceled {
-		os.Remove(modelfile)
-		fmt.Fprintln(progress, "\nInterrupted")
-		os.Exit(1)
-	} else if err == context.DeadlineExceeded {
-		os.Remove(modelfile)
-		fmt.Fprintln(progress, "Timeout downloading model")
-		os.Exit(1)
+	info, err := os.Stat(modelfile)
+
+	if err == nil && info.Size() > 0 {
+		log.Printf("Use local model %s", *model)
 	} else {
-		os.Remove(modelfile)
-		fmt.Fprintln(os.Stderr, "Error:", err)
-		os.Exit(1)
+		log.Printf("Download model %s", *model)
+		if !isInSet(*model, modelNames) {
+			fmt.Printf("Model must be one of: %s\n", strings.Join(modelNames, ","))
+			//os.Exit(1)
+		}
+		if modelfile, err := modeldownloader.Download(ctx, progress, url, modelspath); err == nil || err == io.EOF {
+			fmt.Fprintln(progress, "Model downloaded")
+		} else if err == context.Canceled {
+			os.Remove(modelfile)
+			fmt.Fprintln(progress, "\nInterrupted")
+			os.Exit(1)
+		} else if err == context.DeadlineExceeded {
+			os.Remove(modelfile)
+			fmt.Fprintln(progress, "Timeout downloading model")
+			os.Exit(1)
+		} else {
+			os.Remove(modelfile)
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
 	}
 
 	pref := telebot.Settings{
@@ -139,20 +140,7 @@ func main() {
 	wp := WPInit()
 
 	// Load model
-	err = wp.LoadModel(modelfile, WhisperParams{
-		language:   *language,
-		no_context: *no_context,
-		translate:  *translate,
-		offset:     *offset,
-		duration:   *duration,
-		threads:    *threads,
-		speedup:    *speedup,
-		max_len:    *max_len,
-		max_tokens: *max_tokens,
-		word_thold: *word_thold,
-		tokens:     *tokens,
-		colorize:   *colorize,
-	})
+	err = wp.LoadModel(modelfile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -168,15 +156,25 @@ func main() {
 
 	bot.Use(middleware.Logger())
 
-	bot.Handle(telebot.OnVoice, func(c telebot.Context) error {
-
-		//fileURL := fmt.Sprintf("https://api.telegram.org/bot%s/getFile?file_id=%s", c.Bot().Token, c.Message().Voice.FileID)
-		fileURL, err := getFileURL(c.Bot().Token, c.Message().Voice.FileID)
+	processHandler := func(c telebot.Context, fileURL string) error {
+		err := wp.PrepareModel(WhisperParams{
+			language:   *language,
+			no_context: *no_context,
+			translate:  *translate,
+			offset:     *offset,
+			duration:   *duration,
+			threads:    *threads,
+			speedup:    *speedup,
+			max_len:    *max_len,
+			max_tokens: *max_tokens,
+			word_thold: *word_thold,
+			tokens:     *tokens,
+			colorize:   *colorize,
+		})
 		if err != nil {
-			log.Println(err)
-			return c.Send(err.Error())
+			fmt.Fprintln(os.Stderr, err)
+			return err
 		}
-		fmt.Printf("Received voice message from %s. FileID: %s, FileURL: %s\n", c.Sender().Username, c.Message().Voice.FileID, fileURL)
 
 		start := time.Now()
 		output, err := wp.Transcribe(fileURL)
@@ -189,6 +187,47 @@ func main() {
 
 		// Instead, prefer a context short-hand:
 		return c.Send(output)
+	}
+
+	bot.Handle(telebot.OnVoice, func(c telebot.Context) error {
+
+		fileURL, err := getFileURL(c.Bot().Token, c.Message().Voice.FileID)
+		if err != nil {
+			log.Println(err)
+			return c.Send(err.Error())
+		}
+		fmt.Printf("Received voice message from %s. FileID: %s, FileURL: %s\n", c.Sender().Username, c.Message().Voice.FileID, fileURL)
+		return processHandler(c, fileURL)
+	})
+	bot.Handle(telebot.OnVideoNote, func(c telebot.Context) error {
+
+		fileURL, err := getFileURL(c.Bot().Token, c.Message().VideoNote.FileID)
+		if err != nil {
+			log.Println(err)
+			return c.Send(err.Error())
+		}
+		fmt.Printf("Received VideoNote message from %s. FileID: %s, FileURL: %s\n", c.Sender().Username, c.Message().VideoNote.FileID, fileURL)
+		return processHandler(c, fileURL)
+	})
+	bot.Handle(telebot.OnAudio, func(c telebot.Context) error {
+
+		fileURL, err := getFileURL(c.Bot().Token, c.Message().Audio.FileID)
+		if err != nil {
+			log.Println(err)
+			return c.Send(err.Error())
+		}
+		fmt.Printf("Received Audio message from %s. FileID: %s, FileURL: %s\n", c.Sender().Username, c.Message().Audio.FileID, fileURL)
+		return processHandler(c, fileURL)
+	})
+	bot.Handle(telebot.OnVideo, func(c telebot.Context) error {
+
+		fileURL, err := getFileURL(c.Bot().Token, c.Message().Video.FileID)
+		if err != nil {
+			log.Println(err)
+			return c.Send(err.Error())
+		}
+		fmt.Printf("Received Video message from %s. FileID: %s, FileURL: %s\n", c.Sender().Username, c.Message().Video.FileID, fileURL)
+		return processHandler(c, fileURL)
 	})
 
 	bot.Start()

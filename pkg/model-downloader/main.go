@@ -159,7 +159,7 @@ func Download(ctx context.Context, p io.Writer, model, out string) (string, erro
 	path := filepath.Join(out, filepath.Base(model))
 	info, err := os.Stat(path)
 
-	if err == nil && info.Size() == resp.ContentLength {
+	if err == nil && info.Size() > 0 {
 		fmt.Fprintln(p, "Skipping", model, "as it already exists")
 		return path, nil
 	}

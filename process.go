@@ -59,7 +59,7 @@ func WPInit() *WhisperProcessor {
 		},
 	}
 }
-func (wp *WhisperProcessor) LoadModel(modelfile string, newparams WhisperParams) (err error) {
+func (wp *WhisperProcessor) LoadModel(modelfile string) (err error) {
 	wp.model, err = whisper.New(modelfile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -67,6 +67,11 @@ func (wp *WhisperProcessor) LoadModel(modelfile string, newparams WhisperParams)
 	}
 	//defer wp.model.Close()
 
+	return err
+}
+
+func (wp *WhisperProcessor) PrepareModel(newparams WhisperParams) (err error) {
+	// Set the parameters
 	params := wp.params
 	if err := mergo.Merge(&params, newparams, mergo.WithOverride); err != nil {
 		return err
@@ -74,20 +79,10 @@ func (wp *WhisperProcessor) LoadModel(modelfile string, newparams WhisperParams)
 
 	wp.params = params
 
-	return err
-}
-
-func (wp *WhisperProcessor) Transcribe(file string) (output string, err error) {
-	var data []float32
-	var cb whisper.SegmentCallback
-
 	wp.context, err = wp.model.NewContext()
-
-	// Set the parameters
-
 	fmt.Printf("Setting language to %q\n", wp.params.language)
 	if err := wp.context.SetLanguage(wp.params.language); err != nil {
-		return "", err
+		return err
 	}
 	fmt.Printf("Setting translate to %v\n", wp.params.translate)
 	wp.context.SetTranslate(wp.params.translate)
@@ -121,6 +116,13 @@ func (wp *WhisperProcessor) Transcribe(file string) (output string, err error) {
 	}
 
 	fmt.Printf("\n%s\n", wp.context.SystemInfo())
+
+	return err
+}
+
+func (wp *WhisperProcessor) Transcribe(file string) (output string, err error) {
+	var data []float32
+	var cb whisper.SegmentCallback
 
 	tmpfile := tempFileName("", ".wav")
 	// Convert the received audio to 16kHz WAV format

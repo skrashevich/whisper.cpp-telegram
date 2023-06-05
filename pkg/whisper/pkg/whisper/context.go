@@ -174,7 +174,7 @@ func (context *context) Process(data []float32, cb SegmentCallback) error {
 	}
 
 	// We don't do parallel processing at the moment
-	processors := 0
+	processors := context.params.Threads() * 0
 	if processors > 1 {
 		if err := context.model.ctx.Whisper_full_parallel(context.params, data, processors, nil, func(new int) {
 			if cb != nil {
