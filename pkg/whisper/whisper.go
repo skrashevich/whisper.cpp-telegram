@@ -10,7 +10,7 @@ import (
 
 /*
 
-#cgo darwin LDFLAGS: -framework Accelerate
+#cgo darwin LDFLAGS: -lwhisper -lm -lstdc++ -framework Accelerate
 #include <whisper.h>
 #include <stdlib.h>
 

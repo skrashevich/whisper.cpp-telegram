@@ -4,8 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"io/ioutil"
+	"net/http"
+
 	"fmt"
 	"io"
+
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -13,8 +18,10 @@ import (
 
 	"flag"
 
-	"github.com/go-telegram-bot-api/telegram-bot-api"
 	ffmpeg "github.com/u2takey/ffmpeg-go"
+	"gopkg.in/telebot.v3"
+
+	"gopkg.in/telebot.v3/middleware"
 
 	"log"
 	"os"
@@ -29,6 +36,14 @@ var (
 	// The models which will be downloaded, if no model is specified as an argument
 	modelNames = []string{"ggml-tiny.en", "ggml-tiny", "ggml-base.en", "ggml-base", "ggml-small.en", "ggml-small", "ggml-medium.en", "ggml-medium", "ggml-large-v1", "ggml-large"}
 )
+
+type File struct {
+	Ok     bool `json:"ok"`
+	Result struct {
+		FileID   string `json:"file_id"`
+		FilePath string `json:"file_path"`
+	} `json:"result"`
+}
 
 func main() {
 	token := flag.String("token", "", "Telegram bot token")
@@ -108,15 +123,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	bot, err := tgbotapi.NewBotAPI(*token)
+	pref := telebot.Settings{
+		Token:  *token,
+		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
+	}
 	if err != nil {
 		log.Printf("Not bot token provided")
 		os.Exit(1)
 	}
 
-	bot.Debug = true
+	bot, err := telebot.NewBot(pref)
 
-	log.Printf("Authorized on account %s", bot.Self.UserName)
+	log.Printf("Authorized on account %s", bot.Me.Username)
 
 	wp := WPInit()
 
@@ -148,51 +166,39 @@ func main() {
 		os.Exit(1)
 	}
 
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
+	bot.Use(middleware.Logger())
 
-	updates, err := bot.GetUpdatesChan(u)
+	bot.Handle(telebot.OnVoice, func(c telebot.Context) error {
 
-	for update := range updates {
-		if update.Message == nil { // ignore any non-Message Updates
-			continue
+		//fileURL := fmt.Sprintf("https://api.telegram.org/bot%s/getFile?file_id=%s", c.Bot().Token, c.Message().Voice.FileID)
+		fileURL, err := getFileURL(c.Bot().Token, c.Message().Voice.FileID)
+		if err != nil {
+			log.Println(err)
+			return c.Send(err.Error())
 		}
+		fmt.Printf("Received voice message from %s. FileID: %s, FileURL: %s\n", c.Sender().Username, c.Message().Voice.FileID, fileURL)
 
-		log.Printf("[%s] %s", update.Message.From.UserName, update.Message.Text)
-
-		// Check if the message is a voice or audio message
-		if update.Message.Voice != nil || update.Message.Audio != nil {
-			fileID := ""
-			if update.Message.Voice != nil {
-				fileID = update.Message.Voice.FileID
-			} else if update.Message.Audio != nil {
-				fileID = update.Message.Audio.FileID
-			}
-
-			file, err := bot.GetFileDirectURL(fileID)
-			if err != nil {
-				log.Println(err)
-				continue
-			}
-			start := time.Now()
-			output, err := wp.Transcribe(file)
-			if err != nil {
-				log.Println(err)
-				output = err.Error()
-			}
-			recorgise_duration := time.Since(start)
-			output += fmt.Sprintf("\n\n%.2f seconds", recorgise_duration.Seconds())
-			// Send the output of the binary execution as a reply
-			msg := tgbotapi.NewMessage(update.Message.Chat.ID, string(output))
-			bot.Send(msg)
+		start := time.Now()
+		output, err := wp.Transcribe(fileURL)
+		if err != nil {
+			log.Println(err)
+			output = err.Error()
 		}
-	}
+		recorgise_duration := time.Since(start)
+		output += fmt.Sprintf("\n\n%.2f seconds", recorgise_duration.Seconds())
+
+		// Instead, prefer a context short-hand:
+		return c.Send(output)
+	})
+
+	bot.Start()
+
 }
 
 // convertToWav converts an audio file to 16kHz WAV format
 func convertToWav(input, output string) error {
 	err := ffmpeg.Input(input).
-		Output(output, ffmpeg.KwArgs{"ar": "16000", "f": "wav"}).
+		Output(output, ffmpeg.KwArgs{"c:a": "pcm_s16le", "ar": "16000", "f": "wav"}).
 		OverWriteOutput().
 		Run()
 	if err != nil {
@@ -215,4 +221,28 @@ func isInSet(value string, set []string) bool {
 		}
 	}
 	return false
+}
+func getFileURL(botToken string, fileID string) (string, error) {
+	getFileURL := fmt.Sprintf("https://api.telegram.org/bot%s/getFile?file_id=%s", botToken, fileID)
+
+	resp, err := http.Get(getFileURL)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	var file File
+	err = json.Unmarshal(body, &file)
+	if err != nil {
+		return "", err
+	}
+
+	fileURL := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", botToken, file.Result.FilePath)
+
+	return fileURL, nil
 }
